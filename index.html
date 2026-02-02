@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lal Bilai - Final Update</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/css/intlTelInput.css"/>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/js/intlTelInput.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    
+    <style>
+        :root { --green: #075E54; --white: #ffffff; --bg: #f0f2f5; }
+        * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        
+        #app-wrap { width: 100%; max-width: 400px; height: 100vh; background: var(--white); position: relative; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* লগইন স্ক্রিন */
+        #login-scr { position: absolute; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 25px; }
+        .iti { width: 100%; margin-bottom: 15px; }
+        input { width: 100%; padding: 14px; border: 1px solid #ddd; border-radius: 10px; outline: none; font-size: 16px; }
+        .login-btn { width: 100%; padding: 14px; background: var(--green); color: white; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 10px; font-size: 16px; }
+
+        /* মেইন ইন্টারফেস */
+        header { background: var(--green); color: white; padding: 15px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        #chat-list { flex: 1; overflow-y: auto; background: var(--bg); }
+        .welcome-msg { text-align: center; padding: 50px 20px; color: #888; }
+    </style>
+</head>
+<body>
+
+<div id="app-wrap">
+    <div id="login-scr">
+        <img src="https://image2url.com/r2/default/images/1770055773770-4e97be2e-90a9-48f4-b20b-bb418a6d3c91.jpg" style="width:100px; border-radius:50%; margin-bottom:30px; border: 3px solid #075E54;">
+        <h2 style="margin-bottom:20px; color:var(--green)">Lal Bilai</h2>
+        
+        <input type="tel" id="l-ph">
+        <input type="password" id="l-ps" placeholder="পাসওয়ার্ড দিন" style="margin-top:10px;">
+        
+        <button class="login-btn" onclick="handleLogin()">Sign In</button>
+        <p style="font-size:13px; color:gray; margin-top:20px;">অ্যাকাউন্ট না থাকলে অ্যাডমিনের সাথে যোগাযোগ করুন।</p>
+    </div>
+
+    <div id="main-app" style="display:none; flex-direction:column; height:100%;">
+        <header>
+            <span>Lal Bilai Messenger</span>
+            <span onclick="logout()" style="font-size:12px; cursor:pointer; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:5px;">Logout</span>
+        </header>
+        <div id="chat-list">
+            <div class="welcome-msg">
+                <h3>স্বাগতম!</h3>
+                <p>এখনও কোনো মেসেজ নেই। নতুন চ্যাট শুরু করতে '+' বাটনে ক্লিক করুন।</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Firebase Config
+    const firebaseConfig = { databaseURL: "https://kbook-5d175-default-rtdb.firebaseio.com/" };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let iti;
+    const phoneInput = document.querySelector("#l-ph");
+
+    // Initialize Page
+    window.onload = () => {
+        // Country Code setup
+        iti = window.intlTelInput(phoneInput, {
+            separateDialCode: true,
+            initialCountry: "sa",
+            utilsScript: "https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/js/utils.js"
+        });
+
+        // চেক করুন ইউজার আগে থেকে লগইন কি না
+        if(localStorage.getItem("lb_phone")) {
+            showApp();
+        }
+    };
+
+    // লগইন ফাংশন
+    function handleLogin() {
+        const fullNumber = iti.getNumber(); // এটি একদম কোডসহ ফুল নাম্বার দিবে (+9665...)
+        const pass = document.getElementById('l-ps').value;
+
+        if(!iti.isValidNumber()) {
+            alert("দয়া করে সঠিক মোবাইল নাম্বার দিন!");
+            return;
+        }
+        if(!pass) {
+            alert("পাসওয়ার্ড দিন!");
+            return;
+        }
+
+        // নাম্বারকে Base64 এ রূপান্তর করা (ডাটাবেস কি হিসেবে ব্যবহারের জন্য)
+        const userKey = btoa(fullNumber);
+
+        db.ref('users/' + userKey).once('value', snap => {
+            const userData = snap.val();
+            if(userData) {
+                if(userData.pass === pass) {
+                    localStorage.setItem("lb_phone", userKey);
+                    showApp();
+                } else {
+                    alert("ভুল পাসওয়ার্ড! আবার চেষ্টা করুন।");
+                }
+            } else {
+                alert("এই নাম্বারে কোনো অ্যাকাউন্ট পাওয়া যায়নি।");
+            }
+        });
+    }
+
+    function showApp() {
+        document.getElementById('login-scr').style.display = 'none';
+        document.getElementById('main-app').style.display = 'flex';
+        console.log("Logged in as:", atob(localStorage.getItem("lb_phone")));
+    }
+
+    function logout() {
+        localStorage.clear();
+        location.reload();
+    }
+</script>
+</body>
+</html>
