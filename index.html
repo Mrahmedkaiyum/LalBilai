@@ -1,129 +1,1229 @@
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Lal Bilai - Final Update</title>
-    
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/css/intlTelInput.css"/>
-    
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/js/intlTelInput.min.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
-    
-    <style>
-        :root { --green: #075E54; --white: #ffffff; --bg: #f0f2f5; }
-        * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
-        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        
-        #app-wrap { width: 100%; max-width: 400px; height: 100vh; background: var(--white); position: relative; display: flex; flex-direction: column; overflow: hidden; }
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Lock,
+  Unlock,
+  Plus,
+  Search,
+  ShieldCheck,
+  Download,
+  Upload,
+  Trash2,
+  Pin,
+  PenTool,
+  Eye,
+  EyeOff,
+  FileText,
+  KeyRound,
+  Settings,
+  Eraser,
+  RotateCcw,
+  Check,
+} from 'lucide-react';
 
-        /* লগইন স্ক্রিন */
-        #login-scr { position: absolute; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 25px; }
-        .iti { width: 100%; margin-bottom: 15px; }
-        input { width: 100%; padding: 14px; border: 1px solid #ddd; border-radius: 10px; outline: none; font-size: 16px; }
-        .login-btn { width: 100%; padding: 14px; background: var(--green); color: white; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 10px; font-size: 16px; }
+type VaultCategory = 'note' | 'secret' | 'account';
 
-        /* মেইন ইন্টারফেস */
-        header { background: var(--green); color: white; padding: 15px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
-        #chat-list { flex: 1; overflow-y: auto; background: var(--bg); }
-        .welcome-msg { text-align: center; padding: 50px 20px; color: #888; }
-    </style>
-</head>
-<body>
+interface VaultItem {
+  id: string;
+  title: string;
+  category: VaultCategory;
+  content: string;
+  drawingDataUrl?: string;
+  pinned?: boolean;
+  updatedAt: number;
+}
 
-<div id="app-wrap">
-    <div id="login-scr">
-        <img src="https://image2url.com/r2/default/images/1770055773770-4e97be2e-90a9-48f4-b20b-bb418a6d3c91.jpg" style="width:100px; border-radius:50%; margin-bottom:30px; border: 3px solid #075E54;">
-        <h2 style="margin-bottom:20px; color:var(--green)">Lal Bilai</h2>
-        
-        <input type="tel" id="l-ph">
-        <input type="password" id="l-ps" placeholder="পাসওয়ার্ড দিন" style="margin-top:10px;">
-        
-        <button class="login-btn" onclick="handleLogin()">Sign In</button>
-        <p style="font-size:13px; color:gray; margin-top:20px;">অ্যাকাউন্ট না থাকলে অ্যাডমিনের সাথে যোগাযোগ করুন।</p>
-    </div>
+interface VaultSecurityMeta {
+  salt: string;
+  verifier: string;
+  autoLockMinutes: number;
+  vaultTriggerCode: string;
+}
 
-    <div id="main-app" style="display:none; flex-direction:column; height:100%;">
-        <header>
-            <span>Lal Bilai Messenger</span>
-            <span onclick="logout()" style="font-size:12px; cursor:pointer; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:5px;">Logout</span>
-        </header>
-        <div id="chat-list">
-            <div class="welcome-msg">
-                <h3>স্বাগতম!</h3>
-                <p>এখনও কোনো মেসেজ নেই। নতুন চ্যাট শুরু করতে '+' বাটনে ক্লিক করুন।</p>
-            </div>
+const DB_NAME = 'bk_guard_local_db';
+const DB_VERSION = 1;
+const META_STORE = 'security_meta';
+const VAULT_STORE = 'encrypted_vault';
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function generateSaltBase64(): string {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  return bytesToBase64(salt);
+}
+
+async function deriveAesKey(passcode: string, saltBase64: string): Promise<CryptoKey> {
+  const salt = base64ToBytes(saltBase64);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(passcode),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt.buffer as ArrayBuffer,
+      iterations: 250000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptText(plainText: string, key: CryptoKey): Promise<string> {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+
+  const cipherBuffer = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    key,
+    encoder.encode(plainText)
+  );
+
+  const cipherBytes = new Uint8Array(cipherBuffer);
+  const combined = new Uint8Array(iv.length + cipherBytes.length);
+  combined.set(iv, 0);
+  combined.set(cipherBytes, iv.length);
+
+  return bytesToBase64(combined);
+}
+
+async function decryptText(cipherBase64: string, key: CryptoKey): Promise<string> {
+  const combined = base64ToBytes(cipherBase64);
+  const iv = combined.slice(0, 12);
+  const data = combined.slice(12);
+
+  const plainBuffer = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    key,
+    data.buffer as ArrayBuffer
+  );
+
+  return decoder.decode(plainBuffer);
+}
+
+async function createPasscodeVerifier(passcode: string, saltBase64: string): Promise<string> {
+  const key = await deriveAesKey(passcode, saltBase64);
+  return encryptText('BK_GUARD_UNLOCKED_VERIFIER', key);
+}
+
+async function verifyPasscode(
+  passcode: string,
+  saltBase64: string,
+  verifierBase64: string
+): Promise<CryptoKey | null> {
+  try {
+    const key = await deriveAesKey(passcode, saltBase64);
+    const check = await decryptText(verifierBase64, key);
+    return check === 'BK_GUARD_UNLOCKED_VERIFIER' ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(META_STORE)) {
+        db.createObjectStore(META_STORE);
+      }
+      if (!db.objectStoreNames.contains(VAULT_STORE)) {
+        db.createObjectStore(VAULT_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getSecurityMeta(): Promise<VaultSecurityMeta | null> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(META_STORE, 'readonly');
+    const req = tx.objectStore(META_STORE).get('meta');
+    req.onsuccess = () => resolve((req.result as VaultSecurityMeta) || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveSecurityMeta(meta: VaultSecurityMeta): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(META_STORE, 'readwrite');
+    tx.objectStore(META_STORE).put(meta, 'meta');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getEncryptedVaultPayload(): Promise<string | null> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VAULT_STORE, 'readonly');
+    const req = tx.objectStore(VAULT_STORE).get('payload');
+    req.onsuccess = () => resolve((req.result as string) || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveEncryptedVaultPayload(cipherPayload: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VAULT_STORE, 'readwrite');
+    tx.objectStore(VAULT_STORE).put(cipherPayload, 'payload');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function clearAllLocalVaultData(): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([META_STORE, VAULT_STORE], 'readwrite');
+    tx.objectStore(META_STORE).clear();
+    tx.objectStore(VAULT_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+interface HandwritingPadProps {
+  initialDataUrl?: string;
+  onSave: (dataUrl: string) => void;
+  onCancel: () => void;
+}
+
+const HandwritingPad: React.FC<HandwritingPadProps> = ({
+  initialDataUrl,
+  onSave,
+  onCancel,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [drawing, setDrawing] = useState(false);
+  const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
+  const [strokeWidth, setStrokeWidth] = useState(3);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = 640;
+    const height = 340;
+    canvas.width = width;
+    canvas.height = height;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+
+    if (initialDataUrl) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, width, height);
+      };
+      img.src = initialDataUrl;
+    }
+  }, [initialDataUrl]);
+
+  const getCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const ctx = canvasRef.current?.getContext('2d');
+    if (!ctx) return;
+    const { x, y } = getCoords(e);
+    setDrawing(true);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawing) return;
+    const ctx = canvasRef.current?.getContext('2d');
+    if (!ctx) return;
+    const { x, y } = getCoords(e);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = tool === 'eraser' ? 18 : strokeWidth;
+    ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : '#0f172a';
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+
+  const handlePointerUp = () => {
+    setDrawing(false);
+  };
+
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  };
+
+  const handleDone = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    onSave(canvas.toDataURL('image/png'));
+  };
+
+  return (
+    <div className="space-y-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setTool('pen')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              tool === 'pen'
+                ? 'bg-teal-700 text-white'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
+            }`}
+          >
+            <PenTool className="w-3.5 h-3.5" />
+            কলম
+          </button>
+          <button
+            type="button"
+            onClick={() => setTool('eraser')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              tool === 'eraser'
+                ? 'bg-teal-700 text-white'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
+            }`}
+          >
+            <Eraser className="w-3.5 h-3.5" />
+            ইরেজার
+          </button>
+          <input
+            type="range"
+            min={2}
+            max={8}
+            value={strokeWidth}
+            onChange={(e) => setStrokeWidth(Number(e.target.value))}
+            aria-label="Stroke width"
+            className="w-20 accent-teal-600 ml-1"
+          />
         </div>
+
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleClear}
+            className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            মুছুন
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-400"
+          >
+            বাতিল
+          </button>
+          <button
+            type="button"
+            onClick={handleDone}
+            className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium bg-teal-600 text-white"
+          >
+            <Check className="w-3.5 h-3.5" />
+            যুক্ত করুন
+          </button>
+        </div>
+      </div>
+
+      <canvas
+        ref={canvasRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className="w-full h-56 sm:h-64 rounded-xl border border-slate-300 dark:border-slate-700 touch-none cursor-crosshair bg-white"
+      />
     </div>
-</div>
+  );
+};
 
-<script>
-    // Firebase Config
-    const firebaseConfig = { databaseURL: "https://kbook-5d175-default-rtdb.firebaseio.com/" };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [meta, setMeta] = useState<VaultSecurityMeta | null>(null);
+  const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
 
-    let iti;
-    const phoneInput = document.querySelector("#l-ph");
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [confirmPasscode, setConfirmPasscode] = useState('');
+  const [triggerCodeInput, setTriggerCodeInput] = useState('bk786');
+  const [autoLockInput, setAutoLockInput] = useState(3);
+  const [authError, setAuthError] = useState('');
 
-    // Initialize Page
-    window.onload = () => {
-        // Country Code setup
-        iti = window.intlTelInput(phoneInput, {
-            separateDialCode: true,
-            initialCountry: "sa",
-            utilsScript: "https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/js/utils.js"
-        });
+  const [items, setItems] = useState<VaultItem[]>([]);
+  const [vaultUnlockedView, setVaultUnlockedView] = useState(false);
+  const [activeCategory, setActiveCategory] = useState<'all' | VaultCategory>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSecretsPlain, setShowSecretsPlain] = useState(false);
 
-        // চেক করুন ইউজার আগে থেকে লগইন কি না
-        if(localStorage.getItem("lb_phone")) {
-            showApp();
-        }
+  const [editingItem, setEditingItem] = useState<VaultItem | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [categoryDraft, setCategoryDraft] = useState<VaultCategory>('note');
+  const [contentDraft, setContentDraft] = useState('');
+  const [drawingDraft, setDrawingDraft] = useState<string | undefined>(undefined);
+  const [pinnedDraft, setPinnedDraft] = useState(false);
+  const [showHandwritingPad, setShowHandwritingPad] = useState(false);
+
+  const [showSettings, setShowSettings] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastActivityRef = useRef<number>(Date.now());
+
+  const persistVaultItems = useCallback(
+    async (nextItems: VaultItem[], keyToUse: CryptoKey | null = cryptoKey) => {
+      setItems(nextItems);
+      if (!keyToUse) return;
+      const encrypted = await encryptText(JSON.stringify(nextItems), keyToUse);
+      await saveEncryptedVaultPayload(encrypted);
+    },
+    [cryptoKey]
+  );
+
+  const lockVault = useCallback(() => {
+    setCryptoKey(null);
+    setVaultUnlockedView(false);
+    setShowSecretsPlain(false);
+    setPasscodeInput('');
+    setAuthError('');
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const existingMeta = await getSecurityMeta();
+        if (!active) return;
+        setMeta(existingMeta);
+      } catch {
+        setAuthError('লোকাল স্টোরেজ লোড করতে সমস্যা হয়েছে।');
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cryptoKey || !meta) return;
+
+    const touchActivity = () => {
+      lastActivityRef.current = Date.now();
     };
 
-    // লগইন ফাংশন
-    function handleLogin() {
-        const fullNumber = iti.getNumber(); // এটি একদম কোডসহ ফুল নাম্বার দিবে (+9665...)
-        const pass = document.getElementById('l-ps').value;
+    const handleVisibility = () => {
+      if (document.hidden) {
+        lockVault();
+      }
+    };
 
-        if(!iti.isValidNumber()) {
-            alert("দয়া করে সঠিক মোবাইল নাম্বার দিন!");
-            return;
+    const interval = window.setInterval(() => {
+      const limitMs = (meta.autoLockMinutes || 3) * 60 * 1000;
+      if (Date.now() - lastActivityRef.current > limitMs) {
+        lockVault();
+      }
+    }, 10000);
+
+    window.addEventListener('pointerdown', touchActivity);
+    window.addEventListener('keydown', touchActivity);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('pointerdown', touchActivity);
+      window.removeEventListener('keydown', touchActivity);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [cryptoKey, meta, lockVault]);
+
+  const handleSetupPasscode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    if (passcodeInput.length < 4) {
+      setAuthError('পিন বা পাসওয়ার্ড অন্তত ৪ অক্ষরের হতে হবে।');
+      return;
+    }
+    if (passcodeInput !== confirmPasscode) {
+      setAuthError('দুটি পাসওয়ার্ড মেলেনি।');
+      return;
+    }
+
+    const salt = generateSaltBase64();
+    const verifier = await createPasscodeVerifier(passcodeInput, salt);
+    const derivedKey = await verifyPasscode(passcodeInput, salt, verifier);
+    if (!derivedKey) {
+      setAuthError('এনক্রিপশন কী তৈরি করা যায়নি।');
+      return;
+    }
+
+    const newMeta: VaultSecurityMeta = {
+      salt,
+      verifier,
+      autoLockMinutes: Math.max(1, autoLockInput),
+      vaultTriggerCode: triggerCodeInput.trim().toLowerCase() || 'bk786',
+    };
+
+    const starterItems: VaultItem[] = [
+      {
+        id: crypto.randomUUID(),
+        title: 'স্বাগতম — আপনার ব্যক্তিগত ভল্ট',
+        category: 'note',
+        content:
+          'সব ডেটা শুধুমাত্র এই ডিভাইসে এনক্রিপ্ট হয়ে সংরক্ষিত থাকে। গোপন নোট বা অ্যাকাউন্ট দেখতে উপরের লক/ট্রিগার ব্যবহার করুন।',
+        pinned: true,
+        updatedAt: Date.now(),
+      },
+    ];
+
+    await saveSecurityMeta(newMeta);
+    const encryptedPayload = await encryptText(JSON.stringify(starterItems), derivedKey);
+    await saveEncryptedVaultPayload(encryptedPayload);
+
+    setMeta(newMeta);
+    setCryptoKey(derivedKey);
+    setItems(starterItems);
+    setPasscodeInput('');
+    setConfirmPasscode('');
+  };
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    if (!meta) return;
+
+    const derivedKey = await verifyPasscode(passcodeInput, meta.salt, meta.verifier);
+    if (!derivedKey) {
+      setAuthError('ভুল পাসওয়ার্ড বা পিন। আবার চেষ্টা করুন।');
+      return;
+    }
+
+    const cipherPayload = await getEncryptedVaultPayload();
+    let parsedItems: VaultItem[] = [];
+    if (cipherPayload) {
+      try {
+        const plain = await decryptText(cipherPayload, derivedKey);
+        parsedItems = JSON.parse(plain) as VaultItem[];
+      } catch {
+        setAuthError('ডেটা ডিক্রিপ্ট করা যায়নি।');
+        return;
+      }
+    }
+
+    setCryptoKey(derivedKey);
+    setItems(parsedItems);
+    setPasscodeInput('');
+  };
+
+  useEffect(() => {
+    if (!meta) return;
+    if (searchQuery.trim().toLowerCase() === meta.vaultTriggerCode.toLowerCase()) {
+      setVaultUnlockedView(true);
+      setActiveCategory('all');
+      setSearchQuery('');
+      setStatusMessage('সিক্রেট ভল্ট ভিউ সক্রিয় হয়েছে');
+      window.setTimeout(() => setStatusMessage(''), 2500);
+    }
+  }, [searchQuery, meta]);
+
+  const visibleItems = useMemo(() => {
+    return items
+      .filter((item) => {
+        if (!vaultUnlockedView && (item.category === 'secret' || item.category === 'account')) {
+          return false;
         }
-        if(!pass) {
-            alert("পাসওয়ার্ড দিন!");
-            return;
+        if (activeCategory !== 'all' && item.category !== activeCategory) {
+          return false;
         }
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          return (
+            item.title.toLowerCase().includes(q) || item.content.toLowerCase().includes(q)
+          );
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return b.updatedAt - a.updatedAt;
+      });
+  }, [items, vaultUnlockedView, activeCategory, searchQuery]);
 
-        // নাম্বারকে Base64 এ রূপান্তর করা (ডাটাবেস কি হিসেবে ব্যবহারের জন্য)
-        const userKey = btoa(fullNumber);
+  const openNewEditor = (defaultCat: VaultCategory = 'note') => {
+    setEditingItem(null);
+    setTitleDraft('');
+    setCategoryDraft(defaultCat);
+    setContentDraft('');
+    setDrawingDraft(undefined);
+    setPinnedDraft(false);
+    setShowHandwritingPad(false);
+    setIsEditorOpen(true);
+  };
 
-        db.ref('users/' + userKey).once('value', snap => {
-            const userData = snap.val();
-            if(userData) {
-                if(userData.pass === pass) {
-                    localStorage.setItem("lb_phone", userKey);
-                    showApp();
-                } else {
-                    alert("ভুল পাসওয়ার্ড! আবার চেষ্টা করুন।");
-                }
-            } else {
-                alert("এই নাম্বারে কোনো অ্যাকাউন্ট পাওয়া যায়নি।");
+  const openEditEditor = (item: VaultItem) => {
+    setEditingItem(item);
+    setTitleDraft(item.title);
+    setCategoryDraft(item.category);
+    setContentDraft(item.content);
+    setDrawingDraft(item.drawingDataUrl);
+    setPinnedDraft(Boolean(item.pinned));
+    setShowHandwritingPad(false);
+    setIsEditorOpen(true);
+  };
+
+  const handleSaveItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!titleDraft.trim() && !contentDraft.trim() && !drawingDraft) return;
+
+    const now = Date.now();
+    let next: VaultItem[];
+    if (editingItem) {
+      next = items.map((it) =>
+        it.id === editingItem.id
+          ? {
+              ...it,
+              title: titleDraft.trim() || 'শিরোনামহীন',
+              category: categoryDraft,
+              content: contentDraft,
+              drawingDataUrl: drawingDraft,
+              pinned: pinnedDraft,
+              updatedAt: now,
             }
-        });
+          : it
+      );
+    } else {
+      next = [
+        {
+          id: crypto.randomUUID(),
+          title: titleDraft.trim() || 'শিরোনামহীন',
+          category: categoryDraft,
+          content: contentDraft,
+          drawingDataUrl: drawingDraft,
+          pinned: pinnedDraft,
+          updatedAt: now,
+        },
+        ...items,
+      ];
     }
 
-    function showApp() {
-        document.getElementById('login-scr').style.display = 'none';
-        document.getElementById('main-app').style.display = 'flex';
-        console.log("Logged in as:", atob(localStorage.getItem("lb_phone")));
-    }
+    await persistVaultItems(next);
+    setIsEditorOpen(false);
+  };
 
-    function logout() {
-        localStorage.clear();
-        location.reload();
+  const handleDeleteItem = async (id: string) => {
+    const next = items.filter((it) => it.id !== id);
+    await persistVaultItems(next);
+  };
+
+  const handleTogglePin = async (id: string) => {
+    const next = items.map((it) => (it.id === id ? { ...it, pinned: !it.pinned } : it));
+    await persistVaultItems(next);
+  };
+
+  const handleExportEncryptedBackup = async () => {
+    const cipherPayload = await getEncryptedVaultPayload();
+    if (!meta || !cipherPayload) return;
+
+    const backupBundle = {
+      app: 'BK_GUARD_LOCAL_VAULT',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      meta: {
+        salt: meta.salt,
+        verifier: meta.verifier,
+        autoLockMinutes: meta.autoLockMinutes,
+        vaultTriggerCode: meta.vaultTriggerCode,
+      },
+      cipherPayload,
+    };
+
+    const blob = new Blob([JSON.stringify(backupBundle, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bk-guard-backup-${new Date().toISOString().slice(0, 10)}.bkguard.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatusMessage('এনক্রিপ্টেড ব্যাকআপ ফাইল ডাউনলোড হয়েছে');
+    window.setTimeout(() => setStatusMessage(''), 2500);
+  };
+
+  const handleImportBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (parsed.app !== 'BK_GUARD_LOCAL_VAULT' || !parsed.meta || !parsed.cipherPayload) {
+        setAuthError('সঠিক BK GUARD ব্যাকআপ ফাইল নয়।');
+        return;
+      }
+      await saveSecurityMeta(parsed.meta);
+      await saveEncryptedVaultPayload(parsed.cipherPayload);
+      setMeta(parsed.meta);
+      lockVault();
+      setStatusMessage('ব্যাকআপ রিস্টোর হয়েছে — আপনার পাসওয়ার্ড দিয়ে আনলক করুন');
+    } catch {
+      setAuthError('ব্যাকআপ ফাইল পড়া যায়নি।');
+    } finally {
+      e.target.value = '';
     }
-</script>
-</body>
-</html>
+  };
+
+  const handleWipeAll = async () => {
+    await clearAllLocalVaultData();
+    setMeta(null);
+    setItems([]);
+    lockVault();
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-200">
+        <p className="text-sm">BK GUARD লোড হচ্ছে...</p>
+      </div>
+    );
+  }
+
+  if (!meta) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/90 p-6 space-y-5 shadow-xl">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-teal-700/20 border border-teal-500/40 flex items-center justify-center text-teal-400">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold">BK GUARD সেটআপ</h1>
+              <p className="text-xs text-slate-400">সম্পূর্ণ অন-ডিভাইস এনক্রিপ্টেড ভল্ট</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSetupPasscode} className="space-y-3.5">
+            <div>
+              <label className="block text-xs text-slate-300 mb-1">মাস্টার পাসওয়ার্ড / পিন</label>
+              <input
+                type="password"
+                value={passcodeInput}
+                onChange={(e) => setPasscodeInput(e.target.value)}
+                placeholder="অন্তত ৪ অক্ষর"
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm focus:outline-none focus:border-teal-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-300 mb-1">পাসওয়ার্ড নিশ্চিত করুন</label>
+              <input
+                type="password"
+                value={confirmPasscode}
+                onChange={(e) => setConfirmPasscode(e.target.value)}
+                placeholder="আবার লিখুন"
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm focus:outline-none focus:border-teal-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-300 mb-1">ভল্ট সিক্রেট কোড</label>
+                <input
+                  type="text"
+                  value={triggerCodeInput}
+                  onChange={(e) => setTriggerCodeInput(e.target.value)}
+                  placeholder="যেমন: bk786"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:border-teal-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-300 mb-1">অটো-লক (মিনিট)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={autoLockInput}
+                  onChange={(e) => setAutoLockInput(Number(e.target.value))}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:border-teal-500"
+                />
+              </div>
+            </div>
+
+            {authError && <p className="text-xs text-rose-400">{authError}</p>}
+
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2.5 text-sm transition"
+            >
+              ভল্ট তৈরি করুন
+            </button>
+          </form>
+
+          <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <span>ব্যাকআপ আছে?</span>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="text-teal-400 hover:underline inline-flex items-center gap-1"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              রিস্টোর করুন
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.bkguard.json"
+              onChange={handleImportBackupFile}
+              className="hidden"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!cryptoKey) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900 p-6 space-y-5 shadow-xl">
+          <div className="text-center space-y-2">
+            <div className="w-12 h-12 rounded-2xl bg-teal-700/20 border border-teal-500/40 flex items-center justify-center text-teal-400 mx-auto">
+              <Lock className="w-6 h-6" />
+            </div>
+            <h1 className="text-lg font-bold">BK GUARD লক করা আছে</h1>
+            <p className="text-xs text-slate-400">আপনার মাস্টার পাসওয়ার্ড দিয়ে আনলক করুন</p>
+          </div>
+
+          {statusMessage && (
+            <p className="text-xs text-teal-300 bg-teal-950/60 border border-teal-800 rounded-lg p-2.5 text-center">
+              {statusMessage}
+            </p>
+          )}
+
+          <form onSubmit={handleUnlock} className="space-y-3">
+            <input
+              type="password"
+              value={passcodeInput}
+              onChange={(e) => setPasscodeInput(e.target.value)}
+              placeholder="পাসওয়ার্ড / পিন লিখুন"
+              autoFocus
+              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm focus:outline-none focus:border-teal-500"
+            />
+            {authError && <p className="text-xs text-rose-400">{authError}</p>}
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2.5 text-sm transition"
+            >
+              আনলক করুন
+            </button>
+          </form>
+
+          <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="hover:text-teal-400 inline-flex items-center gap-1"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              ব্যাকআপ রিস্টোর
+            </button>
+            <button
+              type="button"
+              onClick={handleWipeAll}
+              className="hover:text-rose-400"
+            >
+              রিসেট
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.bkguard.json"
+              onChange={handleImportBackupFile}
+              className="hidden"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 pb-24">
+      <header className="sticky top-0 z-20 bg-slate-950/90 backdrop-blur border-b border-slate-800/80">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck className="w-5 h-5 text-teal-400" />
+            <span className="font-bold tracking-tight">
+              {vaultUnlockedView ? 'BK GUARD • Secret Vault' : 'BK GUARD • Notes'}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setVaultUnlockedView((v) => !v)}
+              title="সিক্রেট ভল্ট টগল"
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium border transition ${
+                vaultUnlockedView
+                  ? 'bg-teal-700/30 border-teal-500/50 text-teal-200'
+                  : 'bg-slate-900 border-slate-800 text-slate-300'
+              }`}
+            >
+              {vaultUnlockedView ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+              {vaultUnlockedView ? 'ভল্ট খোলা' : 'নোট মোড'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowSettings((s) => !s)}
+              className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white"
+              aria-label="Settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={lockVault}
+              className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-rose-300 hover:bg-rose-950/50"
+              aria-label="Lock"
+            >
+              <Lock className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-4 pt-4 space-y-4">
+        {statusMessage && (
+          <div className="rounded-xl bg-teal-950/70 border border-teal-800 px-3.5 py-2 text-xs text-teal-200">
+            {statusMessage}
+          </div>
+        )}
+
+        {showSettings && (
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+            <h2 className="text-sm font-semibold">ব্যাকআপ ও সিকিউরিটি</h2>
+            <p className="text-xs text-slate-400">
+              সব ডেটা আপনার ব্রাউজারের IndexedDB-তে এনক্রিপ্ট হয়ে থাকে। ফাইল ডিলিট বা ব্রাউজার ক্লিয়ার করলে
+              নিচের এনক্রিপ্টেড ব্যাকআপ ফাইলটি কাজে লাগবে। সিক্রেট ভল্ট খোলার ট্রিগার কোড:{' '}
+              <span className="font-mono text-teal-300">{meta.vaultTriggerCode}</span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleExportEncryptedBackup}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 py-2 text-xs font-medium text-white"
+              >
+                <Download className="w-4 h-4" />
+                এনক্রিপ্টেড ব্যাকআপ ডাউনলোড
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200"
+              >
+                <Upload className="w-4 h-4" />
+                ব্যাকআপ ইমপোর্ট
+              </button>
+              <button
+                type="button"
+                onClick={handleWipeAll}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-950/70 border border-rose-800/60 px-3.5 py-2 text-xs font-medium text-rose-300"
+              >
+                সব ডেটা মুছুন
+              </button>
+            </div>
+          </section>
+        )}
+
+        <div className="flex flex-col sm:flex-row gap-2.5">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={
+                vaultUnlockedView
+                  ? 'ভল্টে খুঁজুন...'
+                  : 'নোট খুঁজুন (অথবা সিক্রেট কোড লিখে ভল্ট খুলুন)...'
+              }
+              className="w-full rounded-xl bg-slate-900 border border-slate-800 pl-9 pr-3 py-2 text-sm focus:outline-none focus:border-teal-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5 overflow-x-auto">
+            {(['all', 'note', ...(vaultUnlockedView ? (['secret', 'account'] as const) : [])] as const).map(
+              (cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setActiveCategory(cat)}
+                  className={`rounded-xl px-3 py-2 text-xs font-medium whitespace-nowrap border transition ${
+                    activeCategory === cat
+                      ? 'bg-teal-700 border-teal-600 text-white'
+                      : 'bg-slate-900 border-slate-800 text-slate-300'
+                  }`}
+                >
+                  {cat === 'all'
+                    ? 'সব'
+                    : cat === 'note'
+                      ? 'নোট'
+                      : cat === 'secret'
+                        ? 'গোপন তথ্য'
+                        : 'অ্যাকাউন্ট'}
+                </button>
+              )
+            )}
+
+            {vaultUnlockedView && (
+              <button
+                type="button"
+                onClick={() => setShowSecretsPlain((s) => !s)}
+                className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300"
+                title="গোপন লেখা দেখান/লুকান"
+              >
+                {showSecretsPlain ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {isEditorOpen && (
+          <form
+            onSubmit={handleSaveItem}
+            className="rounded-2xl border border-teal-700/50 bg-slate-900 p-4 space-y-3 shadow-lg"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <select
+                  value={categoryDraft}
+                  onChange={(e) => setCategoryDraft(e.target.value as VaultCategory)}
+                  className="rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="note">সাধারণ নোট</option>
+                  <option value="secret">গোপন তথ্য (Vault)</option>
+                  <option value="account">অ্যাকাউন্ট / পিন</option>
+                </select>
+                <label className="inline-flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pinnedDraft}
+                    onChange={(e) => setPinnedDraft(e.target.checked)}
+                    className="accent-teal-600"
+                  />
+                  পিন করে রাখুন
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowHandwritingPad((h) => !h)}
+                className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs text-teal-300"
+              >
+                <PenTool className="w-3.5 h-3.5" />
+                হ্যান্ডরাইটিং
+              </button>
+            </div>
+
+            <input
+              type="text"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              placeholder="শিরোনাম..."
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm font-medium focus:outline-none focus:border-teal-500"
+            />
+
+            <textarea
+              rows={4}
+              value={contentDraft}
+              onChange={(e) => setContentDraft(e.target.value)}
+              placeholder="আপনার ব্যক্তিগত লেখা বা তথ্য এখানে লিখুন..."
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm focus:outline-none focus:border-teal-500"
+            />
+
+            {showHandwritingPad && (
+              <HandwritingPad
+                initialDataUrl={drawingDraft}
+                onSave={(dataUrl) => {
+                  setDrawingDraft(dataUrl);
+                  setShowHandwritingPad(false);
+                }}
+                onCancel={() => setShowHandwritingPad(false)}
+              />
+            )}
+
+            {drawingDraft && !showHandwritingPad && (
+              <div className="space-y-1.5">
+                <img
+                  src={drawingDraft}
+                  alt="Handwritten attachment"
+                  className="max-h-48 rounded-xl border border-slate-700 bg-white object-contain"
+                />
+                <button
+                  type="button"
+                  onClick={() => setDrawingDraft(undefined)}
+                  className="text-xs text-rose-400 hover:underline"
+                >
+                  হ্যান্ডরাইটিং সরান
+                </button>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsEditorOpen(false)}
+                className="rounded-xl px-3.5 py-2 text-xs text-slate-400 hover:text-white"
+              >
+                বাতিল
+              </button>
+              <button
+                type="submit"
+                className="rounded-xl bg-teal-600 hover:bg-teal-500 px-4 py-2 text-xs font-semibold text-white"
+              >
+                সেভ করুন
+              </button>
+            </div>
+          </form>
+        )}
+
+        {visibleItems.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-800 p-10 text-center space-y-2">
+            <FileText className="w-7 h-7 text-slate-600 mx-auto" />
+            <p className="text-sm text-slate-400">এখনো কোনো এন্ট্রি নেই</p>
+            <p className="text-xs text-slate-500">নিচের + বাটনে চাপ দিয়ে নতুন নোট বা ভল্ট এন্ট্রি যোগ করুন</p>
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            {visibleItems.map((item) => {
+              const isSensitive = item.category === 'secret' || item.category === 'account';
+              const maskContent = isSensitive && !showSecretsPlain;
+
+              return (
+                <article
+                  key={item.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 space-y-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        {item.category === 'account' && <KeyRound className="w-3.5 h-3.5 text-amber-400" />}
+                        {item.category === 'secret' && <Lock className="w-3.5 h-3.5 text-teal-400" />}
+                        <h3 className="font-semibold text-sm text-slate-100">{item.title}</h3>
+                        {item.pinned && <Pin className="w-3.5 h-3.5 text-teal-400" />}
+                      </div>
+                      <p className="text-[11px] text-slate-500 font-mono">
+                        {new Date(item.updatedAt).toLocaleString('bn-BD')}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePin(item.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+                        aria-label="Pin"
+                      >
+                        <Pin className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditEditor(item)}
+                        className="rounded-lg px-2.5 py-1 text-xs bg-slate-800 text-slate-200 hover:bg-slate-700"
+                      >
+                        এডিট
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteItem(item.id)}
+                        className="p-1.5 rounded-lg text-rose-400 hover:bg-rose-950/50"
+                        aria-label="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {item.content && (
+                    <p
+                      className={`text-sm whitespace-pre-wrap leading-relaxed ${
+                        maskContent
+                          ? 'font-mono tracking-widest text-slate-500 select-none'
+                          : 'text-slate-300'
+                      }`}
+                    >
+                      {maskContent ? '••••••••••••••••••••••••' : item.content}
+                    </p>
+                  )}
+
+                  {item.drawingDataUrl && !maskContent && (
+                    <img
+                      src={item.drawingDataUrl}
+                      alt={item.title}
+                      className="max-h-48 rounded-xl border border-slate-800 bg-white object-contain"
+                    />
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </main>
+
+      <button
+        type="button"
+        onClick={() => openNewEditor(vaultUnlockedView ? 'secret' : 'note')}
+        className="fixed bottom-6 right-6 z-20 inline-flex items-center gap-2 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white font-semibold px-4 py-3.5 shadow-lg shadow-teal-950/80 transition"
+      >
+        <Plus className="w-5 h-5" />
+        <span className="text-sm">{vaultUnlockedView ? 'নতুন ভল্ট এন্ট্রি' : 'নতুন নোট'}</span>
+      </button>
+    </div>
+  );
+}
